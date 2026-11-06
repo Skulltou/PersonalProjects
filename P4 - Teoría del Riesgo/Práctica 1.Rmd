@@ -1,0 +1,371 @@
+---
+title: "Ajuste de Distribución"
+author: "Emiliano Romero Medina"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    theme: cerulean
+    toc: true
+    toc_float:
+      collapsed: true
+    number_sections: false
+    code_folding: show
+    df_print: paged
+---
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(
+  #echo = FALSE,
+  message = FALSE,
+  warning = FALSE )
+```
+
+```{r, echo=FALSE}
+# Librerías
+library(fitdistrplus)  # Ajuste y comparación de distribuciones
+library(goftest)       # Pruebas de bondad de ajuste (AD, KS, CvM)
+library(evir)          # Herramientas EVT (Mean Excess, GPD, datasets)
+library(actuar)        # Distribuciones actuariales (Pareto)
+library(tibble)        # Tablas modernas
+library(dplyr)         # Manipulación de datos
+library(ggplot2)
+library(moments)
+library(VGAM)          # Contiene la distribución gumbell
+library(evd)
+library(gamlss)
+library(knitr)
+library(kableExtra)
+library(mixtools)
+```
+
+# **Contexto de la base de Datos**
+
+El conjunto de datos utilizado en este trabajo corresponde al Medical Insurance Cost Dataset, recuperado de la plataforma Kaggle y de dominio público. Esta base de datos contiene información de 1,338 asegurados en Estados Unidos e incluye variables demográficas y factores relacionados con el estilo de vida, tales como edad, sexo, índice de masa corporal (IMC), número de dependientes, hábito de fumar y región de residencia.
+
+La variable principal de interés es **charges**, la cual representa el costo total facturado por concepto de seguro médico a cada asegurado. Desde la perspectiva actuarial y en particular de teoría del riesgo, esta variable puede interpretarse como el monto de las obligaciones económicas que la aseguradora debe cubrir, constituyendo así una medida directa del riesgo financiero asumido por la institución.
+
+Este conjunto de datos será empleado para la modelación estadística y el ajuste de distribuciones de probabilidad, particularmente enfocadas en la variable de pagos. Dado que dichos montos representan pérdidas para la aseguradora, su análisis resulta fundamental para la estimación adecuada del riesgo, la evaluación de la severidad de los siniestros y la determinación de primas técnicas.
+
+```{r data}
+data <- read.csv("insurance.csv", header = TRUE)  
+data$sex <- factor(data$sex) #Convertimos las variables de texto en categorias. 
+data$smoker <- factor(data$smoker)
+data$region <- factor(data$region)
+str(data)
+print("------------------------------------------")
+summary(data)
+sd <- sd(data$charges)
+print(paste0("La desviación estándar de charges es:", sd))
+skew <- skewness(data$charges)
+print(paste0("El sesgo de charges es:", skew))
+kurt <- kurtosis(data$charges)
+print(paste0("La curtosis de charges es:", kurt))
+```
+
+La base de datos contiene 1,338 observaciones y 7 variables, de las cuales:
+
+-   `age`: variable cuantitativa discreta (edad del asegurado).
+-   `sex`: variable categórica binaria (female, male).
+-   `bmi`: variable cuantitativa continua (índice de masa corporal).
+-   `children`: variable discreta (número de dependientes).
+-   `smoker`: variable categórica binaria (yes, no).
+-   `region`: variable categórica con 4 niveles.
+-   `charges`: variable cuantitativa continua, correspondiente al costo médico facturado.
+
+La variable de interés principal es `charges`, ya que representa el monto económico que la aseguradora debe cubrir, es decir, la severidad del riesgo.
+
+# **Análisis descriptivo de la variable charges**
+
+Los estadísticos descriptivos para `charges` son:
+
+-   Mínimo: 1,122
+-   Primer cuartil (Q1): 4,740
+-   Mediana: 9,382
+-   Media: 13,270
+-   Tercer cuartil (Q3): 16,640
+-   Máximo: 63,770
+-   Sesgo: 1.51418
+-   Curtosis: 4.595821
+
+Se observa que la **media** (13,270) es considerablemente mayor que la **mediana** (9,382), lo cual indica la presencia de asimetría positiva. Esto sugiere que existen valores extremos elevados que incrementan el promedio.
+
+El rango de la variable **charges** es considerablemente amplio (más de 62,000 unidades monetarias entre el valor mínimo y el máximo), lo cual evidencia una alta variabilidad en los costos médicos.
+
+Este comportamiento se ve reforzado por la **desviación estándar**, que asciende a 12,110.01, un valor elevado en relación con la media (13,270). El hecho de que la desviación estándar sea cercana al promedio indica una dispersión significativa de los datos alrededor de su valor esperado.
+
+La diferencia notable entre el tercer cuartil (16,640) y el máximo (63,770) sugiere la existencia de una cola derecha larga, característica típica de distribuciones de severidad. Además el sesgo (1.5141) y curtosis (4.5958) favorecen la idea de distribución leptocúrtica y cargada a la derecha.
+
+# **Análisis gráfico**
+
+```{r}
+#Histograma con densidad
+ggplot(data, aes(x = charges)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, 
+                 fill = "skyblue", color = "black") +
+  geom_density(color = "red", linewidth = 1) +
+  theme_minimal()
+```
+
+El análisis exploratorio mediante histograma y densidad sugiere que la variable **charges** presenta:
+
+-   Soporte estrictamente positivo.
+-   Asimetría positiva pronunciada.
+-   Cola derecha larga (presencia de valores extremos).
+-   Posible ligera multimodalidad asociada a subpoblaciones (por ejemplo, fumadores vs no fumadores).
+
+```{r}
+#Boxplot con densidad
+ggplot(data, aes(y = charges)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  theme_minimal()
+```
+
+El diagrama de caja confirma la fuerte asimetría positiva observada previamente en el histograma.
+
+Se observa que:
+
+-   La mediana se encuentra relativamente cercana al primer cuartil, lo que sugiere concentración de valores en la parte baja de la distribución.
+-   El bigote superior es considerablemente más largo que el inferior.
+-   Existe una gran cantidad de valores atípicos superiores (outliers), que alcanzan montos cercanos a 63,000, es suficiente con ver que la diferencia entre el 3er Cuartil y el Máximo es de 47,130 unidades.
+
+Estos puntos extremos representan asegurados con costos médicos significativamente elevados en comparación con la mayoría de la muestra.
+
+```{r}
+#Boxplot con densidad
+ggplot(data, aes(x = smoker, y = charges, fill = smoker)) +
+  geom_boxplot() +
+  theme_minimal()
+```
+
+El diagrama de caja segmentado por la variable **smoker** muestra diferencias estructurales claras entre fumadores y no fumadores.
+
+Se observa que:
+
+-   La mediana de los fumadores es considerablemente mayor que la de los no fumadores.
+-   La dispersión en el grupo de fumadores es significativamente más amplia.
+-   Los valores extremos superiores son más frecuentes y de mayor magnitud en fumadores.
+-   Incluso el primer cuartil de los fumadores se encuentra por encima del tercer cuartil de los no fumadores.
+
+Estos resultados evidencian que el hábito de fumar constituye un factor de riesgo determinante en los costos médicos.
+
+En consecuencia, modelar la variable **charges** con una única distribución podría ser insuficiente, ya que los datos parecen provenir de una mezcla de poblaciones con diferente perfil de riesgo.
+
+# **H0 (hipótesis general de modelación)**
+
+La variable `charges` proviene de una distribución continua con soporte positivo y asimetría a la derecha.
+
+A partir de ello se consideran como candidatas las siguientes distribuciones:
+
+1.  **Distribución Lognormal**
+    -   Justificación: Es ampliamente utilizada en modelación de severidad.
+    -   Permite alta asimetría y colas largas.
+    -   La curtuosis alta podría ser modelada con ella.
+2.  **Distribución Pareto**
+    -   Justificación: Flexible para modelar variables positivas y con valores extremos.
+    -   Común en modelación de variables con colas muy pesadas.
+3.  **Distribución Weibull**
+    -   Justificación: También definida en soporte positivo.
+    -   Puede modelar distintos grados de asimetría.
+4.  **Distribución Burr**
+    -   Justificación: Familia flexible para datos con colas pesadas y valores extremos significativos.
+    -   Puede modelar asimetría elevada y curtosis alta. 
+    
+
+Adicionalmente se podría hacer un ajuste de la variable `charges` a través de una mixtura para responder la posible multimodalidad de la distribución.
+
+```{r, echo=FALSE, include=FALSE }
+#Modelos propuestos
+mod1 <- fitdist(data$charges, "lnorm")
+mod2 <- fitdist(data$charges, "pareto")
+mod3 <- fitdist(data$charges, "weibull")
+mod4 <- fitdist(data$charges, "burr",start = list(
+    shape1 = 1,
+    shape2 = 1,
+    rate = 1/mean(data$charges)
+  ),
+  lower = c(0.001, 0.001, 0.000001))
+```
+
+```{r}
+
+# Nombres de modelos
+models <- list(
+  Lognormal = mod1,
+  Pareto    = mod2,
+  Weibull   = mod3,
+  Burr      = mod4
+)
+
+# Extraer AIC y BIC
+info_table <- data.frame(
+  Modelo = names(models),
+  AIC = sapply(models, AIC),
+  BIC = sapply(models, BIC)
+)
+
+gof <- gofstat(models)
+
+gof_table <- data.frame(
+  Modelo = names(models),
+  KS  = gof$ks,
+  CvM = gof$cvm,
+  AD  = gof$ad
+)
+
+final_table <- left_join(gof_table, info_table, by = "Modelo")
+
+kable(final_table, digits = 4)%>% 
+kable_styling(full_width = FALSE, position = "center")
+```
+
+Al comparar los modelos Lognormal, Pareto, Weibull y Burr mediante estadísticas de bondad de ajuste (Kolmogorov–Smirnov, Cramér–von Mises y Anderson–Darling), se observa que la distribución Lognormal presenta consistentemente los menores valores en las tres métricas. Esto indica que es el modelo que mejor reproduce tanto el comportamiento global como la cola de la distribución empírica.
+
+La distribución Burr muestra un desempeño cercano al de la Lognormal; sin embargo, sus estadísticas son ligeramente superiores, lo que implica un ajuste marginalmente inferior pese a contar con un mayor número de parámetros. Por su parte, la Weibull presenta valores considerablemente más altos, especialmente en la estadística de Anderson–Darling, lo que sugiere dificultades para capturar adecuadamente el comportamiento en la cola derecha. En cuanto a la Pareto, los valores extremadamente elevados (incluyendo un estadístico Anderson–Darling infinito y un AIC muy grande) evidencian un ajuste claramente inadecuado para modelar la muestra completa.
+
+En términos de criterios de información, el AIC favorece ampliamente a la distribución Lognormal (27923.58) frente a Burr (27978.13) y Weibull (28027.32).
+
+En conjunto, estos resultados confirman lo observado en el análisis exploratorio inicial: la presencia de asimetría positiva elevada y una cola derecha pronunciada son características que la distribución Lognormal logra capturar adecuadamente, ofreciendo el mejor equilibrio entre calidad de ajuste, parsimonia y estabilidad estadística para modelar la severidad de los costos médicos.
+
+# **Probando ajuste Lognormal**
+
+Con el objetivo de validar la idoneidad de la distribución Lognormal para modelar la severidad de los costos médicos, se aplicaron las pruebas de bondad de ajuste Kolmogorov–Smirnov (KS), Cramér–von Mises (CvM) y Anderson–Darling (AD).
+
+En todos los casos, la hipótesis nula establece que los datos provienen de una distribución Lognormal con parámetros estimados mediante máxima verosimilitud.
+
+Los resultados obtenidos fueron los siguientes:
+
+```{r}
+# Lognormal
+ks_lnorm <- ks.test(data$charges, "plnorm",
+                    meanlog = mod1$estimate["meanlog"],
+                    sdlog   = mod1$estimate["sdlog"])
+
+ad_lnorm <- ad.test(data$charges,
+                    null = "plnorm",
+                    meanlog = mod1$estimate["meanlog"],
+                    sdlog   = mod1$estimate["sdlog"])
+
+cvm_lnorm <- cvm.test(data$charges,
+                    null = "plnorm",
+                    meanlog = mod1$estimate["meanlog"],
+                    sdlog   = mod1$estimate["sdlog"])
+
+pvalues_lognorm <- data.frame(
+  Modelo = "Lognormal",
+  Test = c("Kolmogorov-Smirnov", "Anderson-Darling", "Cramer-von Mises"),
+  Estadistico = c(ks_lnorm$statistic,
+                  ad_lnorm$statistic,
+                  cvm_lnorm$statistic),
+  p_value = c(ks_lnorm$p.value,
+              ad_lnorm$p.value,
+              cvm_lnorm$p.value)
+)
+
+kable(pvalues_lognorm, digits = 4,
+      caption = "Pruebas de bondad de ajuste para la distribución Lognormal") %>% 
+kable_styling(full_width = FALSE, position = "center")
+
+```
+
+Al nivel de significancia del 5%, las pruebas de Kolmogorov–Smirnov y Cramér–von Mises no rechazan la hipótesis nula, lo que indica que no existe evidencia estadísticamente significativa para descartar que los datos sigan una distribución Lognormal. Estos resultados sugieren que el modelo proporciona un ajuste adecuado en términos globales.
+
+No obstante, la prueba de Anderson–Darling (que otorga mayor peso a las discrepancias en las colas de la distribución) arroja un p-value inferior a 0.05, lo que implica el rechazo de la hipótesis nula bajo este criterio. Este resultado sugiere la presencia de desviaciones en la cola derecha, zona particularmente multimodal y que podría explicar la deficiencia de ajuste en la misma.
+
+```{r}
+plot(mod1)
+
+```
+El análisis gráfico complementa la evaluación estadística del modelo Lognormal. En el gráfico de densidad empírica y teórica se observa que la curva ajustada reproduce adecuadamente la forma general de la distribución, especialmente en la zona central de los datos. La asimetría positiva característica de la severidad es capturada correctamente, y el modelo refleja la concentración principal de observaciones en niveles bajos y moderados de costo.
+
+En el gráfico Q–Q, los cuantiles empíricos muestran un alineamiento razonable con los cuantiles teóricos en la mayor parte del rango central. No obstante, se aprecia una desviación progresiva en los cuantiles superiores, donde los puntos tienden a separarse de la línea de referencia. Este comportamiento indica que el modelo podría no capturar con total precisión la magnitud de los valores más extremos, lo cual es consistente con el resultado obtenido en la prueba de Anderson–Darling.
+
+Por su parte, el gráfico de funciones de distribución acumulada (CDF) muestra una alta coincidencia entre la función empírica y la teórica en la mayor parte del soporte. Sin embargo, pequeñas discrepancias son visibles en la región de la cola derecha, donde la función teórica presenta ligeras diferencias respecto al comportamiento observado.
+
+Finalmente, el gráfico P–P evidencia un ajuste global adecuado, dado que la mayoría de los puntos se encuentran próximos a la línea de 45 grados. Las desviaciones observadas en probabilidades altas refuerzan la conclusión de que el modelo Lognormal describe correctamente el cuerpo de la distribución, pero presenta limitaciones en la representación precisa de los eventos más extremos.
+
+# **Modelo Alternativo: Mixtura de Distribuciones Lognormales**
+
+Con el objetivo de capturar posibles heterogeneidades no observadas en la severidad de los costos médicos, se estimó un modelo de mixtura de dos distribuciones Lognormales. Para ello, se modeló el logaritmo de los costos como una combinación de dos distribuciones normales, utilizando el algoritmo EM (Expectation–Maximization) con dos componentes (k = 2). La especificación del modelo es:
+
+$$f(x)=\lambda_1 f_{LN}(x;\mu_1,\sigma_1)+\lambda_2 f_{LN}(x;\mu_2,\sigma_2)$$
+Dónde $\lambda_1+\lambda_2=1$ y $\mu_j$ con $\sigma_j$ corresponden a parámetros de cada componente en escala logarítmica. La estimación se realizó fijando una semilla para garantizar reproducibilidad. Posteriormente, la densidad conjunta fue representada en la escala original de los datos y comparada visualmente con el histograma empírico, junto con las densidades individuales de cada componente.
+
+La mixtura permite observar la contribución diferenciada de cada subpoblación, lo que sugiere la posible existencia de dos grupos: uno asociado a costos moderados (no fumadores) y otro a costos significativamente mayores (si fumadores).
+
+```{r}
+log_charges <- log(data$charges) #Modelamos el logaritmo de los datos que serían normales
+set.seed(55)
+mix_model <- normalmixEM(log_charges, k = 2)
+
+lambda <- mix_model$lambda
+mu     <- mix_model$mu
+sigma  <- mix_model$sigma
+
+d_mix_lnorm <- function(x){
+  lambda[1]*dlnorm(x, mu[1], sigma[1]) +
+  lambda[2]*dlnorm(x, mu[2], sigma[2])
+}
+
+x_seq <- seq(min(data$charges),
+             max(data$charges),
+             length.out = 500)
+
+hist(data$charges,
+     breaks = 30,
+     probability = TRUE,
+     col = "lightgray",
+     border = "white",
+     main = "Mixtura de Lognormales en escala original",
+     xlab = "Charges")
+
+lines(x_seq, d_mix_lnorm(x_seq),
+      col = "red",
+      lwd = 2)
+
+
+dens1 <- lambda[1]*dlnorm(x_seq, mu[1], sigma[1])
+dens2 <- lambda[2]*dlnorm(x_seq, mu[2], sigma[2])
+
+lines(x_seq, dens1, col = "blue", lwd = 2, lty = 2)
+lines(x_seq, dens2, col = "darkgreen", lwd = 2, lty = 2)
+```
+Dónde los parámetros estimados fueron:
+```{r}
+tabla_parametros <- data.frame(
+  Componente = c("Componente 1", "Componente 2"),
+  Peso_lambda = lambda,
+  Media_log_mu = mu,
+  Desv_log_sigma = sigma
+)
+
+kable(tabla_parametros,
+      digits = 4,
+      caption = "Parámetros estimados de la Mixtura de Lognormales (k = 2)") %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+Además es posible calcular su AIC, considerando que se estimaron 5 parámetros, dos medias, dos desviaciones estándar y un peso de mezcla, así el criterio de Akaike se calculó como:
+$$AIC=-2log L +2k$$
+```{r}
+loglik_mix <- mix_model$loglik
+
+k <- 5
+
+AIC_mix <- -2 * loglik_mix + 2 * k
+
+AIC_mix
+```
+Así:
+$$AIC = `r round(AIC_mix,2)`$$
+Siendo muchísimo menor que al del modelo lognormal escogido en un principio, donde el AIC fue de 27923.58, representando la mixtura un ajuste mucho mejor.
+
+# **Conclusión**
+El presente trabajo tuvo como objetivo modelar la distribución de severidad asociada a los costos médicos mediante el ajuste y comparación de distintas distribuciones paramétricas comúnmente empleadas para variables positivas y asimétricas.
+
+En una primera etapa, se evaluaron modelos individuales (Lognormal, Weibull, Pareto y Burr) utilizando estadísticas de bondad de ajuste (Kolmogorov–Smirnov, Cramér–von Mises y Anderson–Darling) y criterios de información (AIC y BIC). Los resultados indicaron que la distribución Lognormal ofrecía el mejor desempeño entre los modelos simples, presentando los menores valores en las métricas globales de ajuste y el menor AIC dentro de este conjunto. Este resultado es coherente con el análisis exploratorio previo, el cual evidenciaba asimetría positiva significativa y presencia de una cola derecha pronunciada.
+
+Posteriormente, con el propósito de capturar posibles estructuras no observadas en los datos, se estimó un modelo de mixtura de dos distribuciones Lognormales mediante el algoritmo EM. Este enfoque permite representar la severidad como una combinación de dos componentes, lo que introduce mayor flexibilidad en la forma de la densidad.
+
+En consecuencia, dentro del conjunto de modelos considerados, la mixtura de Lognormales constituye la especificación que mejor describe los datos observados, tanto desde el punto de vista del ajuste estadístico como de la coherencia estructural del modelo.
